@@ -283,11 +283,107 @@ class TestInheritance:
         assert t2.render() == "[2]"
         assert t3.render() == "[2]"
 
-    def test_invalid_required(self, env):
+    def test_required_chain_redeclared_required(self):
+        # an intermediate template may keep the block required (only
+        # whitespace and comments), and a later descendant can fill it
         env = Environment(
             loader=DictLoader(
                 {
-                    "default": "{% block x required %}data {# #}{% endblock %}",
+                    "default": "{% block x required %}\n{# base #}\n{% endblock %}",
+                    "middle": "{% extends 'default' %}"
+                    "{% block x required %}  {# still required #}{% endblock %}",
+                    "child": "{% extends 'middle' %}{% block x %}ok{% endblock %}",
+                }
+            )
+        )
+        assert env.get_template("child").render().strip() == "ok"
+
+    def test_non_required_block_allows_content(self):
+        # ordinary blocks keep accepting text, expressions and control
+        # structures such as if/for and nested blocks
+        env = Environment(
+            loader=DictLoader({"t": "{% block x %}a{{ 1 }}{% if 1 %}i{% endif %}"
+                               "{% for v in [2] %}{{ v }}{% endfor %}"
+                               "{% block n %}n{% endblock %}{% endblock %}"})
+        )
+        assert env.get_template("t").render() == "a1i2n"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "",
+            " ",
+            "\n",
+            "\t\n  \n\t",
+            "{# comment #}",
+            "\n  {# comment #}\n ",
+            "{# one #} {# two #}",
+            "{#- stripped -#}",
+        ],
+    )
+    def test_required_whitespace_and_comments(self, body):
+        env = Environment(
+            loader=DictLoader(
+                {
+                    "default": f"{{% block x required %}}{body}{{% endblock %}}",
+                    "child": "{% extends 'default' %}{% block x %}[1]{% endblock %}",
+                }
+            )
+        )
+        assert env.get_template("default") is not None
+        assert env.get_template("child").render() == "[1]"
+
+    def test_required_line_comment(self):
+        env = Environment(
+            loader=DictLoader(
+                {
+                    "default": "{% block x required %}## line comment\n"
+                    "{% endblock %}",
+                    "child": "{% extends 'default' %}{% block x %}[1]{% endblock %}",
+                }
+            ),
+            line_comment_prefix="##",
+        )
+        assert env.get_template("default") is not None
+        assert env.get_template("child").render() == "[1]"
+
+    @pytest.mark.parametrize(
+        "body",
+        [
+            "data",
+            "data {# comment #}",
+            "{# comment #} data",
+            "{{ x }}",
+            "{{ foo() }}",
+            "{% if true %}a{% endif %}",
+            "{% for item in [1] %}{{ item }}{% endfor %}",
+            "{% block y %}y{% endblock %}",
+            "{% set y = 1 %}",
+            "{% include 'missing' ignore missing %}",
+            "{% raw %}x{% endraw %}",
+            "{% filter upper %}x{% endfilter %}",
+        ],
+    )
+    def test_invalid_required(self, body):
+        env = Environment(
+            loader=DictLoader(
+                {"default": f"{{% block x required %}}{body}{{% endblock %}}"}
+            )
+        )
+        with pytest.raises(
+            TemplateSyntaxError,
+            match="Required blocks can only contain comments or whitespace",
+        ):
+            env.get_template("default")
+
+    def test_invalid_required_other_templates(self):
+        # parents containing control structures (nested blocks, if) fail
+        # the same way as parents containing plain output, when a child
+        # inherits from them
+        env = Environment(
+            loader=DictLoader(
+                {
+                    "default": "{% block x required %}data{% endblock %}",
                     "default1": "{% block x required %}{% block y %}"
                     "{% endblock %}  {% endblock %}",
                     "default2": "{% block x required %}{% if true %}"
@@ -299,14 +395,36 @@ class TestInheritance:
             )
         )
         t = env.get_template("level1")
+        for name in ("default", "default1", "default2"):
+            with pytest.raises(
+                TemplateSyntaxError,
+                match="Required blocks can only contain comments or whitespace",
+            ):
+                t.render(default=name)
 
-        with pytest.raises(
-            TemplateSyntaxError,
-            match="Required blocks can only contain comments or whitespace",
+    def test_required_error_lineno(self):
+        env = Environment(
+            loader=DictLoader(
+                {
+                    "text": "{% block x required %}\n  {# fine #}\nbad\n"
+                    "{% endblock %}",
+                    "if": "{% block x required %}\n  \n"
+                    "{% if true %}a{% endif %}\n{% endblock %}",
+                    "expr": "{% block x required %}\n\n{{ x }}\n{% endblock %}",
+                    "nested": "{% block x required %}\n\n\n\n"
+                    "{% block y %}y{% endblock %}\n{% endblock %}",
+                }
+            )
+        )
+        for name, lineno in (
+            ("text", 3),
+            ("if", 3),
+            ("expr", 3),
+            ("nested", 5),
         ):
-            assert t.render(default="default")
-            assert t.render(default="default2")
-            assert t.render(default="default3")
+            with pytest.raises(TemplateSyntaxError) as exc_info:
+                env.get_template(name)
+            assert exc_info.value.lineno == lineno
 
     def test_required_with_scope(self, env):
         env = Environment(

@@ -308,18 +308,41 @@ class Parser:
 
         node.body = self.parse_statements(("name:endblock",), drop_needle=True)
 
-        # enforce that required blocks only contain whitespace or comments
-        # by asserting that the body, if not empty, is just TemplateData nodes
-        # with whitespace data
-        if node.required and not all(
-            isinstance(child, nodes.TemplateData) and child.data.isspace()
-            for body in node.body
-            for child in body.nodes  # type: ignore
-        ):
-            self.fail("Required blocks can only contain comments or whitespace")
+        if node.required:
+            self._check_required_block(node)
 
         self.stream.skip_if("name:" + node.name)
         return node
+
+    def _check_required_block(self, node: nodes.Block) -> None:
+        """A required block exists only to be overridden by a child template,
+        so the defining template may only provide whitespace and comments
+        (comments are already removed during lexing).  Any actual content or
+        control structure is a ``TemplateSyntaxError`` reported at the line
+        of the first offending node.
+        """
+        for child in node.body:
+            if not isinstance(child, nodes.Output):
+                self.fail(
+                    "Required blocks can only contain comments or whitespace",
+                    child.lineno,
+                )
+
+            for item in child.nodes:
+                if isinstance(item, nodes.TemplateData) and item.data.isspace():
+                    continue
+
+                # a TemplateData node may span several lines, so point at
+                # the line of its first actual content instead of the
+                # start of the node
+                lineno = item.lineno
+                if isinstance(item, nodes.TemplateData):
+                    leading = len(item.data) - len(item.data.lstrip())
+                    lineno += item.data[:leading].count("\n")
+                self.fail(
+                    "Required blocks can only contain comments or whitespace",
+                    lineno,
+                )
 
     def parse_extends(self) -> nodes.Extends:
         node = nodes.Extends(lineno=next(self.stream).lineno)
