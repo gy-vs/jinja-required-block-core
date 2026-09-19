@@ -311,12 +311,35 @@ class Parser:
         # enforce that required blocks only contain whitespace or comments
         # by asserting that the body, if not empty, is just TemplateData nodes
         # with whitespace data
-        if node.required and not all(
-            isinstance(child, nodes.TemplateData) and child.data.isspace()
-            for body in node.body
-            for child in body.nodes  # type: ignore
-        ):
-            self.fail("Required blocks can only contain comments or whitespace")
+        if node.required:
+            for body_node in node.body:
+                # Output nodes wrap data and output expressions, anything
+                # else is a statement such as if, for, or a nested block and
+                # counts as an implementation
+                children: t.Sequence[nodes.Node]
+
+                if isinstance(body_node, nodes.Output):
+                    children = body_node.nodes
+                else:
+                    children = [body_node]
+
+                for child in children:
+                    if isinstance(child, nodes.TemplateData):
+                        if child.data.isspace():
+                            continue
+
+                        # report the line of the first non-whitespace
+                        # character rather than the start of the data
+                        lineno = child.lineno + child.data[
+                            : len(child.data) - len(child.data.lstrip())
+                        ].count("\n")
+                    else:
+                        lineno = child.lineno
+
+                    self.fail(
+                        "Required blocks can only contain comments or whitespace",
+                        lineno,
+                    )
 
         self.stream.skip_if("name:" + node.name)
         return node

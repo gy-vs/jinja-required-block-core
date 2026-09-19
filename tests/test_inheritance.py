@@ -300,13 +300,95 @@ class TestInheritance:
         )
         t = env.get_template("level1")
 
+        for default in ("default", "default1", "default2"):
+            with pytest.raises(
+                TemplateSyntaxError,
+                match="Required blocks can only contain comments or whitespace",
+            ):
+                t.render(default=default)
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "{% block x required %}{% endblock %}",
+            "{% block x required %} \t\n {% endblock %}",
+            "{% block x required %}{# comment #}{% endblock %}",
+            "{% block x required %}{# multi\nline #}\n{% endblock %}",
+            "{% block x required %}\n {# a #} \n {# b #}\t{% endblock %}",
+        ],
+    )
+    def test_required_whitespace_and_comments(self, source):
+        env = Environment(
+            loader=DictLoader(
+                {
+                    "default": source,
+                    "level1": "{% extends 'default' %}",
+                    "level2": "{% extends 'level1' %}{% block x %}CHILD{% endblock %}",
+                    "level3": "{% extends 'level2' %}",
+                }
+            )
+        )
+        assert env.get_template("level2").render() == "CHILD"
+        assert env.get_template("level3").render() == "CHILD"
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "{% block x required %}data{% endblock %}",
+            "{% block x required %}{{ x }}{% endblock %}",
+            "{% block x required %}{{ m() }}{% endblock %}",
+            "{% block x required %}{% if true %}{% endif %}{% endblock %}",
+            "{% block x required %}{% for i in x %}{% endfor %}{% endblock %}",
+            "{% block x required %}{% set a = 1 %}{% endblock %}",
+            "{% block x required %}{% block y %}{% endblock %}{% endblock %}",
+        ],
+    )
+    def test_invalid_required_nodes(self, source):
+        env = Environment(loader=DictLoader({"default": source}))
+
         with pytest.raises(
             TemplateSyntaxError,
             match="Required blocks can only contain comments or whitespace",
         ):
-            assert t.render(default="default")
-            assert t.render(default="default2")
-            assert t.render(default="default3")
+            env.get_template("default")
+
+    @pytest.mark.parametrize(
+        ("source", "lineno"),
+        [
+            ("{% block x required %}data{% endblock %}", 1),
+            ("{% block x required %}\ndata{% endblock %}", 2),
+            ("{% block x required %}\n\n  data\n{% endblock %}", 3),
+            ("{% block x required %}\n\n{{ x }}{% endblock %}", 3),
+            ("{% block x required %}\n{% if true %}{% endif %}{% endblock %}", 2),
+            ("{% block x required %}\n{% for i in x %}{% endfor %}{% endblock %}", 2),
+            ("{% block x required %}\n{% block y %}{% endblock %}{% endblock %}", 2),
+        ],
+    )
+    def test_invalid_required_lineno(self, source, lineno):
+        env = Environment(loader=DictLoader({"default": source}))
+
+        with pytest.raises(TemplateSyntaxError) as exc_info:
+            env.get_template("default")
+
+        assert exc_info.value.lineno == lineno
+
+    def test_non_required_block_allows_content(self):
+        env = Environment(
+            loader=DictLoader(
+                {
+                    "text": "{% block x %}data{% endblock %}",
+                    "expr": "{% block x %}{{ x }}{% endblock %}",
+                    "if": "{% block x %}{% if true %}a{% endif %}{% endblock %}",
+                    "for": "{% block x %}{% for i in x %}{{ i }}{% endfor %}{% endblock %}",
+                    "nested": "{% block x %}{% block y %}n{% endblock %}{% endblock %}",
+                }
+            )
+        )
+        assert env.get_template("text").render() == "data"
+        assert env.get_template("expr").render(x=1) == "1"
+        assert env.get_template("if").render() == "a"
+        assert env.get_template("for").render(x=[1, 2]) == "12"
+        assert env.get_template("nested").render() == "n"
 
     def test_required_with_scope(self, env):
         env = Environment(

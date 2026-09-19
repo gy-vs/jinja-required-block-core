@@ -5,6 +5,11 @@ Version 3.1.3
 
 Unreleased
 
+-   Fix the parser's structural check for ``required`` blocks. Blocks
+    containing statements such as ``if``, ``for``, or nested ``block``
+    tags raised ``AttributeError`` instead of ``TemplateSyntaxError``.
+    The error now also reports the line of the offending content.
+
 
 Version 3.1.2
 -------------
